@@ -8,8 +8,8 @@ from gedcom.parser import Parser
 from gedcom.element.individual import IndividualElement
 
 # --- ASETUKSET ---
-GEDCOM_FILE = 'sinun_tiedosto.ged'  # VAIHDA TÄMÄ OMAAN TIEDOSTOON
-MAX_PEOPLE = 20  # Montako henkilöä käsitellään testivaiheessa? (Rajoita aluksi, geocoding on hidasta)
+GEDCOM_FILE = 'sukupuu.ged'  # VAIHDA TÄMÄ OMAAN TIEDOSTOON
+MAX_PEOPLE = 40  # Montako henkilöä käsitellään testivaiheessa? (Rajoita aluksi, geocoding on hidasta)
 USER_AGENT = "genealogy_visualizer_v1" # Tunniste geocoding-palvelulle
 
 # Alustetaan geocoder ja GEDCOM-parseri
@@ -162,3 +162,4 @@ fig.update_layout(
 
 print("Valmis! Avataan selain...")
 fig.show()
+
