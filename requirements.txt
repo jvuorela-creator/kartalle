@@ -1,4 +1,3 @@
-python-gedcom
-geopy
-plotly
-pandas
+python-gedcom==1.0.0
+MidiUtil==1.2.1
+
