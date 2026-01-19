@@ -1,80 +1,42 @@
-import sys
-import time
-import pandas as pd
 import plotly.graph_objects as go
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-from gedcom.parser import Parser
-from gedcom.element.individual import IndividualElement
+import pandas as pd
 
-# --- ASETUKSET ---
-GEDCOM_FILE = 'sinun_tiedosto.ged'  # <--- TARKISTA ETTÄ TÄMÄ ON OIKEIN!
-OUTPUT_FILE = 'sukupuu_kartta.html'
-MAX_PEOPLE_TO_CHECK = 10  # Montako henkilöä yritetään käsitellä
-USER_AGENT = "genealogy_visualizer_debug_v2"
-
-print("--- ALOITETAAN OHJELMA ---")
-
-# 1. Alustetaan geocoder
-geolocator = Nominatim(user_agent=USER_AGENT, timeout=10)
-location_cache = {}
-
-# 2. Luetaan GEDCOM
-print(f"Luetaan tiedostoa: {GEDCOM_FILE}...")
-gedcom_parser = Parser()
-try:
-    gedcom_parser.parse_file(GEDCOM_FILE)
-    print("Tiedoston luku onnistui.")
-except FileNotFoundError:
-    print(f"VIRHE: Tiedostoa '{GEDCOM_FILE}' ei löydy kansiosta.")
-    print("Varmista, että tiedostonimi on kirjoitu koodiin täsmälleen oikein.")
-    sys.exit()
-except Exception as e:
-    print(f"VIRHE tiedoston luvussa: {e}")
-    sys.exit()
-
-def get_lat_lon(place_name):
-    """Hakee koordinaatit ja tulostaa mitä tekee."""
-    if not place_name:
-        return None
+# 1. Luodaan KEKSITTYÄ dataa suoraan koodissa
+# (Ei vaadi GEDCOMia eikä geocodingia)
+fake_data = [
+    # Matti Meikäläinen (Turku -> Helsinki)
+    {'Name': 'Matti', 'Year': 1850, 'Lat': 60.45, 'Lon': 22.26, 'Place': 'Turku (Syntymä)'},
+    {'Name': 'Matti', 'Year': 1910, 'Lat': 60.16, 'Lon': 24.93, 'Place': 'Helsinki (Kuolema)'},
     
-    clean_place = place_name.strip()
-    
-    # Tarkistetaan välimuisti
-    if clean_place in location_cache:
-        return location_cache[clean_place]
+    # Maija Meikäläinen (Oulu -> Tampere)
+    {'Name': 'Maija', 'Year': 1860, 'Lat': 65.01, 'Lon': 25.46, 'Place': 'Oulu (Syntymä)'},
+    {'Name': 'Maija', 'Year': 1930, 'Lat': 61.49, 'Lon': 23.78, 'Place': 'Tampere (Kuolema)'},
+]
 
-    try:
-        print(f"   -> Haetaan koordinaatteja: '{clean_place}'...", end=" ")
-        # Pieni viive ettei palvelu estä meitä
-        time.sleep(1.2) 
-        location = geolocator.geocode(clean_place)
-        
-        if location:
-            print(f"OK ({location.latitude:.2f}, {location.longitude:.2f})")
-            coords = (location.latitude, location.longitude)
-            location_cache[clean_place] = coords
-            return coords
-        else:
-            print("EI LÖYTYNYT")
-            return None
-    except Exception as e:
-        print(f"VIRHE: {e}")
-        return None
+print("Luodaan testidataa...")
+df = pd.DataFrame(fake_data)
 
-def extract_year(date_str):
-    if not date_str: return None
-    import re
-    match = re.search(r'\d{4}', date_str)
-    if match:
-        return int(match.group(0))
-    return None
+fig = go.Figure()
 
-# 3. Käydään läpi henkilöt
-print("Etsitään henkilöitä...")
-individuals = [e for e in gedcom_parser.get_root_child_elements() if isinstance(e, IndividualElement)]
-print(f"Tiedostosta löytyi yhteensä {len(individuals)} henkilömerkintää.")
-print(f"Käsitellään ensimmäiset {MAX_PEOPLE_TO_CHECK} henkilöä, joilla on tietoja...")
+# Piirretään viivat
+for name, group in df.groupby('Name'):
+    fig.add_trace(go.Scatter3d(
+        x=group['Lon'], y=group['Lat'], z=group['Year'],
+        mode='lines+markers',
+        line=dict(width=5),
+        marker=dict(size=5),
+        name=name
+    ))
 
-data_points = []
-processed_count = 0
+# Asettelu
+fig.update_layout(
+    title='TESTIKUUTIO - Toimiiko tämä?',
+    scene=dict(
+        xaxis_title='Longitude (Itä-Länsi)',
+        yaxis_title='Latitude (Pohjois-Etelä)',
+        zaxis_title='Vuosi',
+    )
+)
+
+fig.write_html('testi_tuloste.html')
+print("Valmis! Avaa 'testi_tuloste.html'. Näetkö kaksi viivaa?")
