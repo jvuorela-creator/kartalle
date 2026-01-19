@@ -1,201 +1,90 @@
 import sys
+import os
 import re
-from gedcom.parser import Parser
-from gedcom.element.individual import IndividualElement
 from midiutil import MIDIFile
 
-# --- ASETUKSET ---
-GEDCOM_FILE = 'sukupuu.ged'  # VAIHDA TÄMÄN TILALLE OMA TIEDOSTOSI
-ROOT_ID = '@I500003@'             # VAIHDA TÄMÄ ITSEESI (PROBANDIIN)
+# --- ASETUKSET (MUOKKAA NÄITÄ) ---
+GEDCOM_FILE = 'sukupuu.ged'   # Varmista että tämä tiedosto on samassa kansiossa!
 OUTPUT_FILE = 'sukusinfonia.mid'
 
-# Aikaskaala: Kuinka nopeasti vuodet kuluvat?
-# 0.25 iskua per vuosi tarkoittaa, että 100 vuotta kestää n. 25 iskua (nopea).
-BEATS_PER_YEAR = 0.5 
-TEMPO = 120  # BPM
+# Tempo ja kesto
+TEMPO = 120
+BEATS_PER_YEAR = 0.5  # 1 vuosi = puoli iskua
 
-# Soittimet (General MIDI numerot)
-# 40 = Viulu, 42 = Sello, 0 = Piano (varalla)
-INSTRUMENT_FATHER = 42 # Sello
-INSTRUMENT_MOTHER = 40 # Viulu
-INSTRUMENT_UNKNOWN = 0 # Piano
+# Soittimet (General MIDI)
+# 40=Viulu, 42=Sello, 73=Huilu, 0=Piano
+INSTRUMENT_HIGH = 40 
+INSTRUMENT_LOW = 42  
 
-# Nuotit
-NOTE_BIRTH = 84  # C6 (Korkea)
-NOTE_DEATH = 36  # C2 (Matala)
-
-# --- APUFUNKTIOT ---
+# --- YKSINKERTAINEN PARSERI ---
+# Tehty ilman ulkoisia kirjastoja virheiden välttämiseksi
 
 def parse_year(date_str):
-    """Etsii vuosiluvun GEDCOM-päivämäärästä (esim. '12 MAY 1860' -> 1860)."""
+    """Etsii vuosiluvun tekstistä."""
     if not date_str: return None
     match = re.search(r'\d{4}', date_str)
-    if match:
-        return int(match.group(0))
+    if match: return int(match.group(0))
     return None
 
 def get_panning(place_name):
-    """
-    Arvaa sijainnin perusteella panoroinnin (Länsi-Itä).
-    0 = Vasen (Länsi), 64 = Keski, 127 = Oikea (Itä).
-    Tämä on yksinkertaistettu lista esimerkin vuoksi.
-    """
+    """Arpoo panoroinnin paikan nimen perusteella (yksinkertaistettu)."""
     if not place_name: return 64
-    place = place_name.lower()
+    p = place_name.lower()
+    # Vasen (Länsi)
+    if any(x in p for x in ['turku', 'åbo', 'pori', 'vaasa', 'helsinki', 'espoo']): return 30
+    # Oikea (Itä)
+    if any(x in p for x in ['viipuri', 'joensuu', 'kuopio', 'karjala', 'sortavala']): return 100
+    return 64
+
+def simple_gedcom_reader(filename):
+    """Lukee GEDCOMin rivi riviltä ja etsii syntymät/kuolemat."""
+    events = []
     
-    # Länsi-Suomi / Rannikko (Vasen)
-    west = ['turku', 'åbo', 'pori', 'vaasa', 'helsinki', 'espoo', 'rauma', 'ahvenanmaa']
-    # Itä-Suomi / Karjala (Oikea)
-    east = ['joensuu', 'kuopio', 'viipuri', 'sortavala', 'kajaani', 'lappeenranta', 'savonlinna']
+    if not os.path.exists(filename):
+        print(f"VIRHE: Tiedostoa '{filename}' ei löydy!")
+        return []
+
+    print(f"Luetaan tiedostoa: {filename}...")
     
-    for w in west:
-        if w in place: return 30  # Selkeästi vasemmalla
-    for e in east:
-        if e in place: return 100 # Selkeästi oikealla
-        
-    return 64 # Oletus keskellä
-
-def analyze_lineage(gedcom_parser, root_id):
-    """
-    Käy läpi sukupuun ja lajittelee esi-isät isän ja äidin puolelle.
-    Palauttaa kaksi settiä ID-tunnuksia: fathers_side, mothers_side.
-    """
-    fathers_side = set()
-    mothers_side = set()
+    current_id = None
+    current_evt = None # 'BIRT' tai 'DEAT'
     
-    root_person = gedcom_parser.get_element_dictionary().get(root_id)
-    if not root_person:
-        print("Virhe: Juurihenkilöä ei löydy.")
-        return set(), set()
-
-    # Haetaan vanhemmat
-    parents = gedcom_parser.get_parents(root_person)
-    father = None
-    mother = None
-    
-    for p in parents:
-        if p.get_gender() == 'M': father = p
-        if p.get_gender() == 'F': mother = p
-        
-    # Rekursiivinen haku
-    def add_ancestors(person, side_set):
-        if not person: return
-        side_set.add(person.get_pointer())
-        for parent in gedcom_parser.get_parents(person):
-            add_ancestors(parent, side_set)
-
-    if father:
-        print(f"Isän haara alkaa: {father.get_name()[0]} {father.get_name()[1]}")
-        add_ancestors(father, fathers_side)
-    if mother:
-        print(f"Äidin haara alkaa: {mother.get_name()[0]} {mother.get_name()[1]}")
-        add_ancestors(mother, mothers_side)
-        
-    return fathers_side, mothers_side
-
-# --- PÄÄOHJELMA ---
-
-def main():
-    print(f"Luetaan tiedostoa {GEDCOM_FILE}...")
-    gedcom = Parser()
     try:
-        gedcom.parse_file(GEDCOM_FILE)
-    except FileNotFoundError:
-        print("Virhe: Tiedostoa ei löydy. Tarkista nimi.")
-        return
-
-    print("Analysoidaan sukuhaaroja...")
-    fathers_side, mothers_side = analyze_lineage(gedcom, ROOT_ID)
-    
-    events = [] # (Vuosi, Tyyppi, Sukuhaara, Paikka)
-
-    print("Kerätään tapahtumia...")
-    elements = gedcom.get_element_list()
-    for element in elements:
-        if isinstance(element, IndividualElement):
-            person_id = element.get_pointer()
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
             
-            # Määritä haara
-            lineage = 'UNKNOWN'
-            if person_id in fathers_side: lineage = 'FATHER'
-            elif person_id in mothers_side: lineage = 'MOTHER'
-            elif person_id == ROOT_ID: lineage = 'ROOT'
-            else: continue # Ohitetaan sisarukset/serkut, jos halutaan vain suorat esivanhemmat
-            
-            # Syntymä
-            birth = element.get_birth_data()
-            birth_year = parse_year(birth[0])
-            if birth_year:
-                place = birth[1]
-                events.append({'year': birth_year, 'type': 'BIRTH', 'lineage': lineage, 'place': place})
-            
-            # Kuolema
-            death = element.get_death_data()
-            death_year = parse_year(death[0])
-            if death_year:
-                place = death[1]
-                events.append({'year': death_year, 'type': 'DEATH', 'lineage': lineage, 'place': place})
-
-    # Järjestetään aikajärjestykseen
-    events.sort(key=lambda x: x['year'])
-    
-    if not events:
-        print("Ei tapahtumia löytynyt. Tarkista GEDCOM.")
-        return
-
-    min_year = events[0]['year']
-    max_year = events[-1]['year']
-    print(f"Aikajana: {min_year} - {max_year} ({len(events)} tapahtumaa)")
-
-    # --- MIDI LUONTI ---
-    midi = MIDIFile(2) # Kaksi raitaa (0=Isä/Sello, 1=Äiti/Viulu)
-    
-    # Raita 0: Sello (Isä)
-    midi.addTrackName(0, 0, "Isän suku")
-    midi.addTempo(0, 0, TEMPO)
-    midi.addProgramChange(0, 0, 0, INSTRUMENT_FATHER) 
-    
-    # Raita 1: Viulu (Äiti)
-    midi.addTrackName(1, 0, "Äidin suku")
-    midi.addTempo(1, 0, TEMPO)
-    midi.addProgramChange(1, 1, 0, INSTRUMENT_MOTHER) # Channel 1
-
-    for event in events:
-        # Ajoitus
-        time = (event['year'] - min_year) * BEATS_PER_YEAR
+        print(f"Tiedosto luettu. Rivejä yhteensä: {len(lines)}")
         
-        # Sukuhaara määrittää raidan ja kanavan
-        if event['lineage'] == 'FATHER':
-            track = 0; channel = 0
-        elif event['lineage'] == 'MOTHER':
-            track = 1; channel = 1
-        else:
-            track = 0; channel = 0 # Root menee oletuksena raidalle 0
+        for line in lines:
+            line = line.strip()
+            parts = line.split(' ', 2)
+            if len(parts) < 2: continue
             
-        # Nuotti ja kesto
-        if event['type'] == 'BIRTH':
-            pitch = NOTE_BIRTH
-            duration = 0.5 # Lyhyt "ping"
-            velocity = 100 # Voimakas
-        else: # DEATH
-            pitch = NOTE_DEATH
-            duration = 4.0 # Pitkä sointi
-            velocity = 70 # Hiljaisempi
-            
-        # Panorointi (Sijainti)
-        pan_value = get_panning(event['place'])
-        # MIDI Control Change 10 = Pan
-        midi.addControllerEvent(track, channel, time, 10, pan_value)
-        
-        # Lisää nuotti
-        midi.addNote(track, channel, pitch, time, duration, velocity)
+            level = parts[0]
+            tag = parts[1]
+            value = parts[2] if len(parts) > 2 else ""
 
-    # Tallennus
-    with open(OUTPUT_FILE, "wb") as output_file:
-        midi.writeFile(output_file)
-        
-    print(f"Valmis! Tallennettu: {OUTPUT_FILE}")
-    print("Avaa tiedosto musiikkiohjelmassa (GarageBand, Logic, MuseScore) kuullaksesi äänet oikein.")
+            # 1. Uusi henkilö
+            if level == '0' and value == 'INDI': # Joskus ID on tagin paikalla, tämä on yksinkertaistus
+                continue 
+            if level == '0' and tag.startswith('@') and value == 'INDI':
+                current_id = tag
+                current_evt = None
+                
+            # 2. Tapahtuman tunnistus
+            elif level == '1':
+                if tag == 'BIRT': current_evt = 'BIRT'
+                elif tag == 'DEAT': current_evt = 'DEAT'
+                else: current_evt = None
+                
+            # 3. Päivämäärä
+            elif level == '2' and tag == 'DATE' and current_evt:
+                year = parse_year(value)
+                if year:
+                    events.append({
+                        'year': year,
+                        'type': 'BIRTH' if current_evt == 'BIRT' else 'DEATH',
+                        'place': '' # Paikka haetaan seuraavaksi jos löytyy
+                    })
 
-if __name__ == '__main__':
-    main()
+            # 4. Paikka (
