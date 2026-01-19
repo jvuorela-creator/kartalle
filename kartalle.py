@@ -1,158 +1,164 @@
-import streamlit as st
-import folium
-from streamlit_folium import st_folium
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut
+import sys
 import time
 import pandas as pd
+import plotly.graph_objects as go
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
+from gedcom.parser import Parser
+from gedcom.element.individual import IndividualElement
 
 # --- ASETUKSET ---
-st.set_page_config(page_title="Sukututkijan Karttapalvelu", layout="wide")
+GEDCOM_FILE = 'sinun_tiedosto.ged'  # VAIHDA TÄMÄ OMAAN TIEDOSTOON
+MAX_PEOPLE = 20  # Montako henkilöä käsitellään testivaiheessa? (Rajoita aluksi, geocoding on hidasta)
+USER_AGENT = "genealogy_visualizer_v1" # Tunniste geocoding-palvelulle
 
-# --- APUFUNKTIOT ---
+# Alustetaan geocoder ja GEDCOM-parseri
+geolocator = Nominatim(user_agent=USER_AGENT)
+gedcom_parser = Parser()
+try:
+    gedcom_parser.parse_file(GEDCOM_FILE)
+    print(f"Luettu tiedosto: {GEDCOM_FILE}")
+except FileNotFoundError:
+    print(f"VIRHE: Tiedostoa '{GEDCOM_FILE}' ei löydy. Tarkista nimi.")
+    sys.exit()
 
-def parse_gedcom_simple(file_content):
-    """
-    Yksinkertainen GEDCOM-jäsennin, joka etsii henkilöt ja syntymäpaikat.
-    Tämä on tehty kestäväksi, jotta se ei kaadu erikoisiin merkistöihin.
-    """
-    people = []
-    current_person = None
-    lines = file_content.split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        parts = line.split(' ', 2)
-        
-        if len(parts) < 2:
-            continue
-            
-        level = parts[0]
-        tag = parts[1]
-        value = parts[2] if len(parts) > 2 else ""
-        
-        # Uusi henkilö alkaa
-        if level == '0' and value.endswith('INDI'):
-            if current_person and 'name' in current_person:
-                people.append(current_person)
-            current_person = {'id': parts[1], 'events': {}}
-            
-        # Nimi
-        elif level == '1' and tag == 'NAME' and current_person is not None:
-            current_person['name'] = value.replace('/', '') # Siivotaan kauttaviivat
-            
-        # Syntymäpaikka (yksinkertaistettu logiikka: etsii 1 BIRT -> 2 PLAC)
-        elif level == '1' and tag == 'BIRT' and current_person is not None:
-            current_person['last_tag'] = 'BIRT'
-        elif level == '2' and tag == 'PLAC' and current_person is not None:
-            if current_person.get('last_tag') == 'BIRT':
-                current_person['birth_place'] = value
-                
-    # Lisätään viimeinenkin listaan
-    if current_person and 'name' in current_person:
-        people.append(current_person)
-        
-    return people
+# Välimuisti koordinaateille, ettei samaa paikkaa haeta turhaan uudestaan
+location_cache = {}
 
-@st.cache_data
-def geocode_locations(locations):
-    """
-    Hakee koordinaatit paikkakunnille. Käyttää välimuistia (cache), 
-    jotta hakuja ei tehdä turhaan uudestaan.
-    """
-    geolocator = Nominatim(user_agent="genealogy_mapper_v1")
-    results = {}
+def get_lat_lon(place_name):
+    """Hakee paikannimelle koordinaatit (Lat, Lon)."""
+    if not place_name:
+        return None
     
-    # Progress bar käyttöliittymään
-    progress_bar = st.progress(0)
-    total = len(locations)
+    # Siivotaan paikannimeä (otetaan esim. maan nimi talteen jos tarkempaa ei löydy)
+    clean_place = place_name.strip()
     
-    for i, place in enumerate(locations):
-        # Päivitetään progress bar
-        progress_bar.progress((i + 1) / total)
-        
-        if place in results:
-            continue
-            
-        try:
-            # HUOM: Tähän voisi lisätä sanakirjan historiallisille paikoille
-            # Esim: if place == "Wiborg": search_place = "Vyborg"
-            
-            location = geolocator.geocode(place)
-            if location:
-                results[place] = (location.latitude, location.longitude)
-            else:
-                results[place] = None
-            
-            # Ollaan kohteliaita API:lle (Nomimatim vaatii 1s viiveen)
-            time.sleep(1.1)
-            
-        except (GeocoderTimedOut, Exception):
-            results[place] = None
-            
-    progress_bar.empty()
-    return results
+    if clean_place in location_cache:
+        return location_cache[clean_place]
 
-# --- KÄYTTÖLIITTYMÄ ---
+    try:
+        print(f"Haetaan koordinaatteja: {clean_place}...")
+        location = geolocator.geocode(clean_place)
+        time.sleep(1.1)  # TÄRKEÄ: Nominatim vaatii 1 sekunnin tauon hakujen välillä
+        
+        if location:
+            coords = (location.latitude, location.longitude)
+            location_cache[clean_place] = coords
+            return coords
+        else:
+            print(f" -> Ei löytynyt: {clean_place}")
+            return None
+    except (GeocoderTimedOut, Exception) as e:
+        print(f" -> Virhe haussa: {e}")
+        return None
 
-st.title("🗺️ Sukututkijan Muuttoliikekartta")
-st.markdown("""
-Lataa **GEDCOM-tiedostosi** (.ged), niin sovellus piirtää esivanhempiesi syntymäpaikat kartalle.
-*Huom: Tämä on demoversio. Historialliset paikannimet (esim. vanhat pitäjät) eivät välttämättä löydy automaattisesti nykykartoista.*
-""")
+def extract_year(date_str):
+    """Yksinkertainen vuoden erottelu päivämäärästä."""
+    if not date_str: return None
+    # Etsitään 4 numeroa stringistä
+    import re
+    match = re.search(r'\d{4}', date_str)
+    if match:
+        return int(match.group(0))
+    return None
 
-uploaded_file = st.file_uploader("Valitse GEDCOM-tiedosto", type=['ged'])
+# --- DATAN KERÄYS ---
+data_points = []
+individuals = [e for e in gedcom_parser.get_root_child_elements() if isinstance(e, IndividualElement)]
 
-if uploaded_file is not None:
-    # Luetaan tiedosto
-    string_data = uploaded_file.getvalue().decode("utf-8", errors='ignore')
+print(f"Löydetty {len(individuals)} henkilöä. Käsitellään ensimmäiset {MAX_PEOPLE}...")
+
+count = 0
+for element in individuals:
+    if count >= MAX_PEOPLE:
+        break
+
+    name = " ".join(element.get_name())
+    birth = element.get_birth_data()
+    death = element.get_death_data()
     
-    st.info("Tiedosto ladattu. Analysoidaan rakennetta...")
+    birth_year = extract_year(birth[0])
+    birth_place = birth[1]
     
-    # 1. Parsitaan data
-    people = parse_gedcom_simple(string_data)
-    
-    # Suodatetaan vain ne, joilla on syntymäpaikka
-    people_with_places = [p for p in people if 'birth_place' in p]
-    
-    st.write(f"Löydettiin {len(people)} henkilöä, joista {len(people_with_places)}:lla on merkitty syntymäpaikka.")
-    
-    if len(people_with_places) > 0:
-        # Kerätään uniikit paikat geokoodausta varten
-        unique_places = list(set([p['birth_place'] for p in people_with_places]))
+    death_year = extract_year(death[0])
+    death_place = death[1]
+
+    # Otetaan mukaan vain jos on edes syntymäaika ja -paikka tiedossa
+    if birth_year and birth_place:
+        coords_b = get_lat_lon(birth_place)
         
-        st.write(f"Haetaan koordinaatteja {len(unique_places)} eri paikkakunnalle...")
-        
-        # 2. Geokoodataan
-        coords = geocode_locations(unique_places)
-        
-        # 3. Piirretään kartta
-        m = folium.Map(location=[64.0, 26.0], zoom_start=5)
-        
-        found_count = 0
-        missing_count = 0
-        
-        for p in people_with_places:
-            place = p['birth_place']
-            latlon = coords.get(place)
+        if coords_b:
+            # Lisätään syntymäpiste
+            data_points.append({
+                'Name': name,
+                'Type': 'Birth',
+                'Year': birth_year,
+                'Lat': coords_b[0],
+                'Lon': coords_b[1],
+                'Place': birth_place
+            })
             
-            if latlon:
-                folium.Marker(
-                    location=latlon,
-                    popup=f"<b>{p['name']}</b><br>Syntyi: {place}",
-                    icon=folium.Icon(color="blue", icon="user")
-                ).add_to(m)
-                found_count += 1
-            else:
-                missing_count += 1
-        
-        st_folium(m, width=800, height=500)
-        
-        st.success(f"Kartta valmis! {found_count} henkilöä sijoitettu kartalle.")
-        if missing_count > 0:
-            st.warning(f"{missing_count} henkilön paikkaa ei löytynyt karttapalvelusta (todennäköisesti vanha/muuttunut nimi).")
-            
-        # Näytetään data taulukkona debuggausta varten
-        if st.checkbox("Näytä löydetty data taulukkona"):
-            df = pd.DataFrame(people_with_places)
-            st.dataframe(df)
+            # Jos kuolintiedot löytyvät, lisätään kuolema ja viiva niiden välille
+            if death_year and death_place:
+                coords_d = get_lat_lon(death_place)
+                if coords_d:
+                    data_points.append({
+                        'Name': name,
+                        'Type': 'Death',
+                        'Year': death_year,
+                        'Lat': coords_d[0],
+                        'Lon': coords_d[1],
+                        'Place': death_place
+                    })
+            count += 1
+
+# --- VISUALISOINTI (PLOTLY) ---
+df = pd.DataFrame(data_points)
+
+if df.empty:
+    print("Ei dataa visualisoitavaksi. Tarkista GEDCOM-tiedoston paikkamerkinnät.")
+    sys.exit()
+
+fig = go.Figure()
+
+# 1. Piirretään viivat (elämänkaaret)
+# Ryhmitellään nimen mukaan, jotta voidaan piirtää viiva syntymästä kuolemaan
+for name, group in df.groupby('Name'):
+    if len(group) > 1: # Tarvitaan vähintään 2 pistettä viivaan
+        group = group.sort_values('Year') # Varmistetaan aikajärjestys
+        fig.add_trace(go.Scatter3d(
+            x=group['Lon'], y=group['Lat'], z=group['Year'],
+            mode='lines',
+            line=dict(width=4),
+            opacity=0.6,
+            name=name,
+            showlegend=False
+        ))
+
+# 2. Piirretään pisteet (tapahtumat)
+fig.add_trace(go.Scatter3d(
+    x=df['Lon'], y=df['Lat'], z=df['Year'],
+    mode='markers',
+    marker=dict(
+        size=5,
+        color=df['Year'], # Väri vuoden mukaan
+        colorscale='Viridis',
+        opacity=0.8
+    ),
+    text=df['Name'] + " (" + df['Place'] + ")", # Hover-teksti
+    name='Tapahtumat'
+))
+
+# 3. Asettelu
+fig.update_layout(
+    title='Suvun Aika-Paikka-Kuutio',
+    scene=dict(
+        xaxis_title='Pituusaste (Longitude)',
+        yaxis_title='Leveysaste (Latitude)',
+        zaxis_title='Vuosi (Aika)',
+    ),
+    margin=dict(l=0, r=0, b=0, t=50)
+)
+
+print("Valmis! Avataan selain...")
+fig.show()
